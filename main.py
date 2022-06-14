@@ -7,9 +7,11 @@ from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import MultiStepLR
 
-
+LR = 0.001
+EPOCH = 5
+BATCH_SIZE = 64
 DATA_PATH = 'data/train'
-
+DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 
 class TensorDataset(Dataset):
@@ -25,30 +27,58 @@ class TensorDataset(Dataset):
     def __len__(self):
         return self.data.size(0)
 
-class DnCNN(torch.nn.Module):
-    def __init__(self, depth=17, n_channels=64, image_channels=1):
-        super(DnCNN, self).__init__()
-        kernel_size = 3
-        padding = 1
-        layers = []
-        layers += [nn.Conv2d(in_channels=1, out_channels=32, kernel_size=3, padding=1),
+class Network(torch.nn.Module):
+    def __init__(self):
+        super(Network, self).__init__()
+        layer1 = [nn.Conv2d(in_channels=1, out_channels=32, kernel_size=3, padding=1),
                    nn.ReLU(inplace=True),
                    nn.Dropout()]
-        layers += [nn.Conv2d(in_channels=32, out_channels=32, kernel_size=3, padding=padding,
+        self.layer1 = nn.Sequential(*layer1)
+        layer2 = [nn.Conv2d(in_channels=32, out_channels=32, kernel_size=3, padding=1,
                              bias=False),
-                   nn.BatchNorm2d(32),
+                   nn.BatchNorm2d(num_features=32),
                    nn.ReLU(inplace=True)]  # 卷积层后接由BatchNorm或者InstanceNorm层时，bias最好设为False
-        for i in range(depth-2):
-            layers += [nn.Conv2d(in_channels=n_channels, out_channels=n_channels, kernel_size=kernel_size,padding=padding, bias=False),
-                       nn.BatchNorm2d(n_channels, eps=0.0001, momentum=0.95),
-                       nn.ReLU(inplace=True)]#卷积层后接由BatchNorm或者InstanceNorm层时，bias最好设为False
-        layers += [nn.Conv2d(in_channels=n_channels, out_channels=image_channels, kernel_size=kernel_size, padding=padding, bias=False)]
-        self.network = nn.Sequential(*layers)
+        self.layer2 = nn.Sequential(*layer2)
+        layer3 = [nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, padding=1),
+                   nn.ReLU(inplace=True),
+                   nn.Dropout(),
+                   nn.MaxPool2d(kernel_size=2)]
+        self.layer3 = nn.Sequential(*layer3)
+        layer4 = [nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, padding=1,
+                            bias=False),
+                  nn.BatchNorm2d(num_features=64),
+                  nn.ReLU(inplace=True),
+                  nn.Dropout()]  # 卷积层后接由BatchNorm或者InstanceNorm层时，bias最好设为False
+        self.layer4 = nn.Sequential(*layer4)
+        layer5 = [nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, padding=1,
+                            bias=False),
+                  nn.BatchNorm2d(num_features=64),
+                  nn.ReLU(inplace=True)]  # 卷积层后接由BatchNorm或者InstanceNorm层时，bias最好设为False
+        self.layer5 = nn.Sequential(*layer5)
+        layer6 = [nn.Conv2d(in_channels=128, out_channels=128, kernel_size=3, padding=1),
+                  nn.ReLU(inplace=True),
+                  nn.Dropout(),
+                  nn.MaxPool2d(kernel_size=2)]
+        self.layer6 = nn.Sequential(*layer6)
+        layer7 = [nn.Flatten(),
+                  nn.Linear(in_features=3584,out_features=512),
+                  nn.BatchNorm2d(num_features=512),
+                  nn.ReLU(inplace=True),
+                  nn.Dropout()]
+        self.layer7 = nn.Sequential(*layer7)
+        layer8 = nn.Linear(in_features=512,out_features=2)
+        self.layer8 = layer8
         self._initialize_weights()
     def forward(self, x):
-        y = x
-        out = self.network(x)
-        return y - out
+        y0 = self.layer1(x)
+        y1 = self.layer2(y0)
+        y2 = self.layer3(torch.cat([y0,y1],1))
+        y3 = self.layer4(y2)
+        y4 = self.layer5(y3)
+        y5 = self.layer6(torch.cat([y3, y4], 1))
+        y6 = self.layer7(y5)
+        out = self.layer8(y6)
+        return out
     def _initialize_weights(self):
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -73,7 +103,26 @@ def datagenerator(data_path):
     for i in range(len(dataY)):
         dataY[i] = dataY0[i//len(dataX0[0])]
     data = TensorDataset(dataX,dataY)
+    return data
 
 
 if __name__ == '__main__':
-    datagenerator(DATA_PATH)
+    model = Network()
+    model.train()
+    criterion = nn.MSELoss(reduction='sum')
+    model = model.to(DEVICE)
+    optimizer = torch.optim.Adam(model.parameters(), lr=LR)
+    data = datagenerator(DATA_PATH)
+    DLoader = DataLoader(dataset=data, batch_size=BATCH_SIZE, shuffle=True)
+    for epoch in range(EPOCH):
+        epoch_loss = 0
+        for n_count, (y, x) in enumerate(DLoader):
+            batch_x, batch_y = x.to(DEVICE), y.to(DEVICE)
+            optimizer.zero_grad()
+            loss = criterion(model(batch_x), batch_y)
+            epoch_loss += loss.item()
+            loss.backward()
+            optimizer.step()
+            if n_count % 10 == 0:
+                print('%4d %4d / %4d loss = %2.4f' % (
+                epoch + 1, n_count, data.size(0) // BATCH_SIZE, loss.item() / BATCH_SIZE))
