@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import MultiStepLR
 
 LR = 0.001
-EPOCH = 5
+EPOCH = 20
 BATCH_SIZE = 64
 DATA_PATH = 'data/train'
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -25,7 +25,7 @@ class TensorDataset(Dataset):
         return data_tensor, label_tensor
 
     def __len__(self):
-        return self.data.size(0)
+        return len(self.data)
 
 class Network(torch.nn.Module):
     def __init__(self):
@@ -61,8 +61,8 @@ class Network(torch.nn.Module):
                   nn.MaxPool2d(kernel_size=2)]
         self.layer6 = nn.Sequential(*layer6)
         layer7 = [nn.Flatten(),
-                  nn.Linear(in_features=3584,out_features=512),
-                  nn.BatchNorm2d(num_features=512),
+                  nn.Linear(in_features=5376,out_features=512),
+                  nn.BatchNorm1d(num_features=512),
                   nn.ReLU(inplace=True),
                   nn.Dropout()]
         self.layer7 = nn.Sequential(*layer7)
@@ -98,10 +98,12 @@ def datagenerator(data_path):
         tempY = np.load(file_list[i+1])['y']
         dataX0 = np.vstack((dataX0,tempX))
         dataY0 = np.hstack((dataY0,tempY))
-    dataX = dataX0.reshape(-1,30,25)
+    dataX = dataX0.reshape(-1,30,25).astype('float32')
+    dataX = np.expand_dims(dataX,axis=1)
     dataY = np.zeros(len(dataX))
     for i in range(len(dataY)):
         dataY[i] = dataY0[i//len(dataX0[0])]
+    dataY = dataY.astype('int64')
     data = TensorDataset(dataX,dataY)
     return data
 
@@ -109,20 +111,21 @@ def datagenerator(data_path):
 if __name__ == '__main__':
     model = Network()
     model.train()
-    criterion = nn.MSELoss(reduction='sum')
+    criterion = nn.CrossEntropyLoss()
     model = model.to(DEVICE)
     optimizer = torch.optim.Adam(model.parameters(), lr=LR)
     data = datagenerator(DATA_PATH)
     DLoader = DataLoader(dataset=data, batch_size=BATCH_SIZE, shuffle=True)
     for epoch in range(EPOCH):
         epoch_loss = 0
-        for n_count, (y, x) in enumerate(DLoader):
+        for n_count, (x, y) in enumerate(DLoader):
             batch_x, batch_y = x.to(DEVICE), y.to(DEVICE)
             optimizer.zero_grad()
+            l = model(batch_x)
             loss = criterion(model(batch_x), batch_y)
             epoch_loss += loss.item()
             loss.backward()
             optimizer.step()
             if n_count % 10 == 0:
                 print('%4d %4d / %4d loss = %2.4f' % (
-                epoch + 1, n_count, data.size(0) // BATCH_SIZE, loss.item() / BATCH_SIZE))
+                epoch + 1, n_count, len(data) // BATCH_SIZE, loss.item() / BATCH_SIZE))
